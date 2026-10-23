@@ -1,0 +1,17 @@
+[package]
+name = "multicontrol-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AppKit menu-bar panel for Multi Control"
+
+[[bin]]
+name = "multicontrol"
+path = "src/main.rs"
+
+[dependencies]
+multicontrol-core = { path = "../../crates/core" }
+multicontrol-shell = { path = "../../crates/shell" }
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"

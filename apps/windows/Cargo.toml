@@ -1,0 +1,24 @@
+[package]
+name = "multicontrol-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Win32 tray panel for Multi Control"
+
+[[bin]]
+name = "multicontrol-windows"
+path = "src/main.rs"
+
+[dependencies]
+multicontrol-core = { path = "../../crates/core" }
+multicontrol-shell = { path = "../../crates/shell" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

@@ -1,0 +1,17 @@
+[package]
+name = "multicontrol-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GTK 4 panel for Multi Control"
+
+[[bin]]
+name = "multicontrol-linux"
+path = "src/main.rs"
+
+[dependencies]
+multicontrol-core = { path = "../../crates/core" }
+multicontrol-shell = { path = "../../crates/shell" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }

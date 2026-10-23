@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-expanded"
+description = "Enables the set_expanded command without any pre-configured scope."
+commands.allow = ["set_expanded"]
+
+[[permission]]
+identifier = "deny-set-expanded"
+description = "Denies the set_expanded command without any pre-configured scope."
+commands.deny = ["set_expanded"]

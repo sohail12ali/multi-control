@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Identify</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: transparent; }
+      body { display: grid; place-items: center; font-family: "Avenir Next", "Segoe UI", sans-serif; }
+      #n {
+        font-size: 18rem;
+        font-weight: 700;
+        color: white;
+        text-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="n"></div>
+    <script type="module">
+      const node = document.getElementById("n");
+      const params = new URLSearchParams(location.search);
+      if (params.get("n")) node.textContent = params.get("n");
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        await listen("flash", (event) => { node.textContent = String(event.payload); });
+      } catch { /* opened outside the app */ }
+    </script>
+  </body>
+</html>
