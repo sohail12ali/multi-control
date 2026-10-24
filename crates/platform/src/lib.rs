@@ -4,6 +4,9 @@ mod keymap;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
+#[path = "hid_mac.rs"]
+mod hid_mac;
+#[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
@@ -21,6 +24,20 @@ pub enum Captured {
     Button { button: u8, down: bool },
     Wheel { dx: i32, dy: i32 },
     Key { usage: u16, down: bool },
+    Devices(Vec<HwDevice>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HwKind {
+    Keyboard,
+    Pointer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HwDevice {
+    pub id: String,
+    pub name: String,
+    pub kind: HwKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +56,7 @@ pub enum PlatCmd {
     Inject(DeviceEvent),
     Identify(String),
     OpenSettings,
+    SetShared { share_all: bool, ids: Vec<String> },
     Shutdown,
 }
 

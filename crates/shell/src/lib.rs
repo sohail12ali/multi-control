@@ -73,7 +73,13 @@ fn ensure_daemon(path: &std::path::Path) {
     }
     let binary = daemon_binary();
     if !binary.exists() {
+        build_workspace_daemon(&binary);
+    }
+    if !binary.exists() {
         eprintln!("daemon binary not found at {}", binary.display());
+        return;
+    }
+    if connect(path).is_ok() {
         return;
     }
     let _ = Command::new(binary).spawn();
@@ -82,6 +88,31 @@ fn ensure_daemon(path: &std::path::Path) {
             return;
         }
         thread::sleep(Duration::from_millis(40));
+    }
+}
+
+fn build_workspace_daemon(binary: &std::path::Path) {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    if !manifest.is_file() {
+        return;
+    }
+    eprintln!("Building the Multi Control daemon…");
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.arg("build")
+        .arg("-p")
+        .arg("multicontrol-daemon")
+        .arg("--manifest-path")
+        .arg(manifest);
+    if binary
+        .components()
+        .any(|component| component.as_os_str() == "release")
+    {
+        cmd.arg("--release");
+    }
+    match cmd.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("daemon build failed ({status})"),
+        Err(err) => eprintln!("could not run cargo to build the daemon: {err}"),
     }
 }
 
@@ -96,8 +127,12 @@ fn daemon_binary() -> PathBuf {
     };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join(name);
-            if sibling.exists() {
+            let sibling = dir.join(&name);
+            if sibling.exists()
+                || dir
+                    .file_name()
+                    .is_some_and(|dir_name| dir_name == "debug" || dir_name == "release")
+            {
                 return sibling;
             }
         }

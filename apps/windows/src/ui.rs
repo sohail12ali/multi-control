@@ -56,6 +56,7 @@ fn blank_state() -> StateSnapshot {
         discovered: Vec::new(),
         paired: Vec::new(),
         pairing: None,
+        inputs: Vec::new(),
     }
 }
 

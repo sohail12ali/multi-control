@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use multicontrol_core::{
     generate_pair_code, jump_hotkey, pair_codes_match, Cursor, Desk, Direction, DiscoveredPeer,
-    IpcEvent, IpcRequest, KeyState, MachineId, Message, MoveCoalescer, MoveOutcome, PairingView,
-    PeerRecord, PermissionState, Screen, StateSnapshot,
+    InputDevice, InputKind, IpcEvent, IpcRequest, KeyState, MachineId, Message, MoveCoalescer,
+    MoveOutcome, PairingView, PeerRecord, PermissionState, Screen, StateSnapshot,
 };
-use multicontrol_platform::{Captured, DeviceEvent, Endpoint, FakeHandle, PlatCmd};
+use multicontrol_platform::{Captured, DeviceEvent, Endpoint, FakeHandle, HwKind, PlatCmd};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
@@ -21,6 +21,7 @@ use crate::identity::{self, Gate, Identity};
 
 const PAIR_WINDOW: Duration = Duration::from_secs(120);
 const FLUSH: Duration = Duration::from_millis(4);
+const SWITCH_DELAY: Duration = Duration::from_millis(150);
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
 pub struct DaemonOptions {
@@ -76,6 +77,7 @@ pub async fn start(opts: DaemonOptions) -> Result<Running> {
         peers: Vec::new(),
         screens: Vec::new(),
         layout_rev: 0,
+        local_only: Vec::new(),
     });
     if disk.id.is_empty() {
         disk.id = new_id();
@@ -153,6 +155,8 @@ struct Disk {
     peers: Vec<PeerRecord>,
     screens: Vec<Screen>,
     layout_rev: u64,
+    #[serde(default)]
+    local_only: Vec<String>,
 }
 
 impl Disk {
@@ -311,7 +315,6 @@ struct App {
     injected_buttons: BTreeSet<u8>,
     layout_rev: u64,
     heartbeat: Duration,
-    discover: bool,
     dialing: HashSet<String>,
     cmds: std::sync::mpsc::Sender<PlatCmd>,
     events: mpsc::UnboundedSender<Hub>,
@@ -321,6 +324,17 @@ struct App {
     fake_handle: Option<FakeHandle>,
     dirty: bool,
     stop: bool,
+    edge_hold: Option<EdgeHold>,
+    local_only: Vec<String>,
+    devices: Vec<InputDevice>,
+    capture_sent: Option<(bool, Vec<String>)>,
+}
+
+struct EdgeHold {
+    since: Instant,
+    from: MachineId,
+    cursor: Cursor,
+    warped: bool,
 }
 
 impl App {
@@ -377,7 +391,6 @@ impl App {
             injected_buttons: BTreeSet::new(),
             layout_rev: disk.layout_rev,
             heartbeat: opts.heartbeat,
-            discover: opts.discover,
             dialing: HashSet::new(),
             cmds,
             events,
@@ -387,6 +400,10 @@ impl App {
             fake_handle: fake,
             dirty: true,
             stop: false,
+            edge_hold: None,
+            local_only: disk.local_only,
+            devices: Vec::new(),
+            capture_sent: None,
         };
         (app, capture_rx, opts.discover)
     }
@@ -511,6 +528,7 @@ impl App {
                 }
             }
             Captured::Key { usage, down } => self.on_key(usage, down),
+            Captured::Devices(listed) => self.on_devices(listed),
         }
     }
 
@@ -520,13 +538,70 @@ impl App {
         }
         match self.desk.apply_delta(self.cursor.clone(), dx, dy) {
             MoveOutcome::Stay { cursor } => {
+                let parked = self.edge_hold.as_ref().and_then(|hold| {
+                    self.desk.edge_point(&hold.from, &hold.cursor)
+                });
+                let still_there = parked.as_ref().is_some_and(|edge| {
+                    edge.screen == cursor.screen && edge.x == cursor.x && edge.y == cursor.y
+                });
+                if !still_there {
+                    self.edge_hold = None;
+                }
                 self.cursor = cursor;
                 if self.is_remote() {
                     self.send_move();
                 }
             }
-            MoveOutcome::Switch { cursor, from } => self.switch_to(from, cursor),
+            MoveOutcome::Switch { cursor, from } => self.hold_edge(from, cursor),
         }
+    }
+
+    fn hold_edge(&mut self, from: MachineId, cursor: Cursor) {
+        let same = self
+            .edge_hold
+            .as_ref()
+            .is_some_and(|hold| hold.from == from && hold.cursor.screen == cursor.screen);
+        if same {
+            if let Some(hold) = self.edge_hold.as_mut() {
+                hold.cursor = cursor;
+            }
+        } else {
+            self.edge_hold = Some(EdgeHold {
+                since: Instant::now(),
+                from: from.clone(),
+                cursor,
+                warped: false,
+            });
+        }
+        let Some(dest) = self.edge_hold.as_ref().map(|hold| hold.cursor.clone()) else {
+            return;
+        };
+        let Some(parked) = self.desk.edge_point(&from, &dest) else {
+            return;
+        };
+        self.cursor = parked;
+        let already = self.edge_hold.as_ref().is_some_and(|hold| hold.warped);
+        if !already && from.0 == self.local_id {
+            let (x, y) = self.local_of(&self.cursor.clone());
+            self.command(PlatCmd::Warp { x, y });
+            if let Some(hold) = self.edge_hold.as_mut() {
+                hold.warped = true;
+            }
+        }
+    }
+
+    fn poll_edge(&mut self) {
+        let ready = self
+            .edge_hold
+            .as_ref()
+            .is_some_and(|hold| hold.since.elapsed() >= SWITCH_DELAY);
+        if !ready {
+            return;
+        }
+        let Some(hold) = self.edge_hold.take() else {
+            return;
+        };
+        self.switch_to(hold.from, hold.cursor);
     }
 
     fn on_button(&mut self, button: u8, down: bool) {
@@ -575,6 +650,7 @@ impl App {
     }
 
     fn switch_to(&mut self, from: MachineId, cursor: Cursor) {
+        self.edge_hold = None;
         if cursor.screen == from {
             self.cursor = cursor;
             return;
@@ -887,6 +963,9 @@ impl App {
         match request {
             IpcRequest::SetPaused { paused } => {
                 self.paused = paused;
+                if paused {
+                    self.edge_hold = None;
+                }
                 if paused && self.is_remote() {
                     let home = self.home_cursor();
                     let from = self.cursor.screen.clone();
@@ -963,6 +1042,25 @@ impl App {
                 }
             }
             IpcRequest::OpenPermissionSettings => self.command(PlatCmd::OpenSettings),
+            IpcRequest::RecheckPermission => {
+                if let Some(check) = self.recheck {
+                    self.permission = check();
+                    self.dirty = true;
+                }
+            }
+            IpcRequest::SetInputShared { id, shared } => {
+                if shared {
+                    self.local_only.retain(|kept| kept != &id);
+                } else if !self.local_only.iter().any(|kept| kept == &id) {
+                    self.local_only.push(id);
+                }
+                for device in &mut self.devices {
+                    device.shared = !self.local_only.iter().any(|kept| kept == &device.id);
+                }
+                self.save();
+                self.apply_capture();
+                self.dirty = true;
+            }
             IpcRequest::Shutdown => self.stop = true,
         }
     }
@@ -1193,8 +1291,48 @@ impl App {
             peers: self.peers.values().cloned().collect(),
             screens: self.desk.screens().to_vec(),
             layout_rev: self.layout_rev,
+            local_only: self.local_only.clone(),
         }
         .save(&self.home.join("config.json"));
+    }
+
+    fn on_devices(&mut self, listed: Vec<multicontrol_platform::HwDevice>) {
+        self.devices = listed
+            .into_iter()
+            .map(|device| InputDevice {
+                shared: !self.local_only.iter().any(|kept| kept == &device.id),
+                id: device.id,
+                name: device.name,
+                kind: match device.kind {
+                    HwKind::Keyboard => InputKind::Keyboard,
+                    HwKind::Pointer => InputKind::Pointer,
+                },
+            })
+            .collect();
+        self.apply_capture();
+        self.dirty = true;
+    }
+
+    fn apply_capture(&mut self) {
+        let share_all = self.local_only.is_empty() || self.devices.is_empty();
+        let ids = if share_all {
+            Vec::new()
+        } else {
+            self.devices
+                .iter()
+                .filter(|device| device.shared)
+                .map(|device| device.id.clone())
+                .collect()
+        };
+        let next = (share_all, ids);
+        if self.capture_sent.as_ref() == Some(&next) {
+            return;
+        }
+        self.command(PlatCmd::SetShared {
+            share_all: next.0,
+            ids: next.1.clone(),
+        });
+        self.capture_sent = Some(next);
     }
 
     fn snapshot(&self) -> StateSnapshot {
@@ -1202,7 +1340,6 @@ impl App {
         let mut seen_ids = HashSet::new();
         for seen in self.discovered.values() {
             seen_ids.insert(seen.id.clone());
-            let online = self.link_id(&seen.id).is_some() || true;
             discovered.push(DiscoveredPeer {
                 id: seen.id.clone(),
                 name: seen.name.clone(),
@@ -1210,7 +1347,7 @@ impl App {
                 port: seen.port,
                 fingerprint: seen.fingerprint.clone(),
                 paired: self.peers.contains_key(&seen.id),
-                online,
+                online: true,
             });
         }
         for peer in self.peers.values() {
@@ -1250,6 +1387,7 @@ impl App {
                 paired
             },
             pairing: self.pairing_view(),
+            inputs: self.devices.clone(),
         }
     }
 
@@ -1292,6 +1430,8 @@ impl CloneSnapshot for Option<PairIn> {
 async fn owner_loop(mut app: App, mut events: mpsc::UnboundedReceiver<Hub>, mut shutdown: watch::Receiver<bool>) {
     let mut ticker = tokio::time::interval(app.heartbeat.max(Duration::from_millis(50)) / 2);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut edge_clock = tokio::time::interval(Duration::from_millis(50));
+    edge_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     app.publish();
     loop {
         if app.stop || *shutdown.borrow() {
@@ -1300,6 +1440,7 @@ async fn owner_loop(mut app: App, mut events: mpsc::UnboundedReceiver<Hub>, mut 
         tokio::select! {
             _ = shutdown.changed() => break,
             _ = ticker.tick() => app.tick(),
+            _ = edge_clock.tick() => app.poll_edge(),
             event = events.recv() => {
                 let Some(event) = event else { break };
                 app.handle(event);

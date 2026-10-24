@@ -2,9 +2,14 @@
 
 use multicontrol_core::{IpcRequest, Screen, StateSnapshot};
 use multicontrol_shell::Client;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSBezierPath, NSColor, NSEvent, NSStringDrawing, NSView};
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2::runtime::AnyObject;
+use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{
+    NSBezierPath, NSColor, NSEvent, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSStringDrawing, NSTextAlignment, NSView,
+};
+use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
 use std::cell::RefCell;
 
 pub struct DeskIvars {
@@ -37,28 +42,49 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _dirty: NSRect) {
             let bounds = self.bounds();
-            NSColor::colorWithRed_green_blue_alpha(0.95, 0.93, 0.89, 1.0).setFill();
-            NSBezierPath::fillRect(bounds);
+            let background = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, 12.0, 12.0);
+            NSColor::colorWithRed_green_blue_alpha(0.93, 0.94, 0.95, 1.0).setFill();
+            background.fill();
             let state = self.ivars().state.borrow();
             let placed: Vec<&Screen> = state.screens.iter().filter(|screen| screen.placed).collect();
             if placed.is_empty() {
                 return;
             }
             let (scale, ox, oy) = fit(&placed, bounds);
+            let style: objc2::rc::Retained<NSMutableParagraphStyle> =
+                unsafe { msg_send![NSMutableParagraphStyle::alloc(), init] };
+            style.setAlignment(NSTextAlignment::Center);
+            let font = NSFont::boldSystemFontOfSize(12.0);
+            let ink = NSColor::colorWithRed_green_blue_alpha(0.16, 0.18, 0.22, 1.0);
             for (index, screen) in placed.iter().enumerate() {
                 let rect = screen_rect(screen, scale, ox, oy);
                 let color = COLORS[index % COLORS.len()];
+                let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, 8.0, 8.0);
                 NSColor::colorWithRed_green_blue_alpha(color.0, color.1, color.2, 1.0).setFill();
-                NSBezierPath::fillRect(rect);
+                path.fill();
                 if screen.id.0 == state.local_id {
-                    NSColor::colorWithRed_green_blue_alpha(0.18, 0.56, 0.42, 1.0).setStroke();
-                    let path = NSBezierPath::bezierPathWithRect(rect);
-                    path.setLineWidth(3.0);
+                    NSColor::colorWithRed_green_blue_alpha(0.22, 0.45, 0.86, 1.0).setStroke();
+                    path.setLineWidth(2.5);
                     path.stroke();
                 }
-                let title = NSString::from_str(&screen.name);
+                let title = if screen.id.0 == state.local_id {
+                    format!("{}\nThis Mac", screen.name)
+                } else {
+                    screen.name.clone()
+                };
+                let text = NSString::from_str(&title);
+                let text_rect = NSRect::new(
+                    NSPoint::new(rect.origin.x + 8.0, rect.origin.y + rect.size.height / 2.0 - 16.0),
+                    NSSize::new((rect.size.width - 16.0).max(8.0), 32.0),
+                );
+                let attrs = unsafe {
+                    NSDictionary::from_slices(
+                        &[NSFontAttributeName, NSForegroundColorAttributeName, NSParagraphStyleAttributeName],
+                        &[any(&*font), any(&*ink), any(&*style)],
+                    )
+                };
                 unsafe {
-                    title.drawInRect_withAttributes(rect, None);
+                    text.drawInRect_withAttributes(text_rect, Some(&attrs));
                 }
             }
         }
@@ -138,11 +164,11 @@ define_class!(
 );
 
 const COLORS: [(f64, f64, f64); 5] = [
-    (0.97, 0.84, 0.71),
-    (0.81, 0.91, 0.85),
-    (0.85, 0.87, 0.97),
-    (0.96, 0.83, 0.87),
-    (0.91, 0.88, 0.78),
+    (0.86, 0.92, 1.0),
+    (0.86, 0.95, 0.89),
+    (1.0, 0.93, 0.84),
+    (0.93, 0.89, 0.98),
+    (0.98, 0.89, 0.90),
 ];
 
 impl DeskView {
@@ -178,6 +204,7 @@ fn empty() -> StateSnapshot {
         discovered: Vec::new(),
         paired: Vec::new(),
         pairing: None,
+        inputs: Vec::new(),
     }
 }
 
@@ -195,6 +222,10 @@ fn fit(screens: &[&Screen], bounds: NSRect) -> (f64, f64, f64) {
 fn screen_rect(screen: &Screen, scale: f64, ox: f64, oy: f64) -> NSRect {
     NSRect::new(
         NSPoint::new(ox + screen.x as f64 * scale, oy + screen.y as f64 * scale),
-        NSSize::new((screen.width as f64 * scale).max(72.0), (screen.height as f64 * scale).max(48.0)),
+        NSSize::new((screen.width as f64 * scale).max(96.0), (screen.height as f64 * scale).max(64.0)),
     )
+}
+
+fn any(value: &impl objc2::Message) -> &AnyObject {
+    unsafe { &*(value as *const _ as *const AnyObject) }
 }

@@ -47,7 +47,7 @@ fn run(conn: RustConnection, root: u32, events: Sender<Captured>, cmds: mpsc::Re
                     last = (x, y);
                 }
                 PlatCmd::Inject(event) => inject(&conn, root, event),
-                PlatCmd::HideCursor(_) | PlatCmd::Identify(_) | PlatCmd::OpenSettings => {}
+                PlatCmd::HideCursor(_) | PlatCmd::Identify(_) | PlatCmd::OpenSettings | PlatCmd::SetShared { .. } => {}
                 PlatCmd::Shutdown => return,
             }
         }

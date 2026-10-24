@@ -61,7 +61,7 @@ async fn run(events: Sender<Captured>, cmds: Receiver<PlatCmd>, size_tx: Sender<
                 }
             }
             PlatCmd::Shutdown => break,
-            PlatCmd::Swallow(_) | PlatCmd::HideCursor(_) | PlatCmd::Warp { .. } | PlatCmd::Identify(_) | PlatCmd::OpenSettings => {
+            PlatCmd::Swallow(_) | PlatCmd::HideCursor(_) | PlatCmd::Warp { .. } | PlatCmd::Identify(_) | PlatCmd::OpenSettings | PlatCmd::SetShared { .. } => {
                 if let Some(capture) = &capture {
                     let _ = capture;
                 }

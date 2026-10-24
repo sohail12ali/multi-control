@@ -1,19 +1,18 @@
 //! macOS capture via a Quartz event tap, and injection via CGEventPost.
 //! The tap callback swallows events while this machine is driving another one.
 
+use super::hid_mac;
+
 use crate::{Captured, DeviceEvent, Endpoint, PlatCmd};
 use multicontrol_core::PermissionState;
 use objc2_core_foundation::{
-    CGPoint, CFMachPort, CFMachPortCreateRunLoopSource, CFRetained, CFRunLoopAddSource,
-    CFRunLoopGetCurrent, CFRunLoopRun, CFRunLoopStop, kCFRunLoopCommonModes,
+    CGPoint, CFBoolean, CFDictionary, CFMachPort, CFRetained, CFRunLoop, CFString, kCFBooleanTrue,
+    kCFRunLoopCommonModes,
 };
 use objc2_core_graphics::{
     CGAssociateMouseAndMouseCursorPosition, CGDirectDisplayID, CGDisplayHideCursor,
-    CGDisplayPixelsHigh, CGDisplayPixelsWide, CGDisplayShowCursor, CGEvent, CGEventCreate,
-    CGEventCreateKeyboardEvent, CGEventCreateMouseEvent, CGEventField, CGEventGetFlags,
-    CGEventGetIntegerValueField, CGEventGetLocation, CGEventMask, CGEventPost,
-    CGEventSetIntegerValueField, CGEventSetType, CGEventSource,
-    CGEventTapCreate, CGEventTapEnable, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+    CGDisplayPixelsHigh, CGDisplayPixelsWide, CGDisplayShowCursor, CGEvent, CGEventField,
+    CGEventMask, CGEventSource, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
     CGEventTapProxy, CGEventType, CGKeyCode, CGMainDisplayID, CGMouseButton,
     CGWarpMouseCursorPosition,
 };
@@ -28,21 +27,32 @@ const MAGIC: i64 = 0x4D43;
 
 struct TapCtx {
     events: Sender<Captured>,
-    swallow: AtomicBool,
+    swallow: std::sync::Arc<AtomicBool>,
     port: AtomicPtr<CFMachPort>,
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> u8;
+    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> u8;
+    static kAXTrustedCheckOptionPrompt: &'static CFString;
 }
 
-fn trusted() -> bool {
-    unsafe { AXIsProcessTrusted() != 0 }
+fn trusted(prompt: bool) -> bool {
+    if !prompt {
+        return unsafe { AXIsProcessTrusted() != 0 };
+    }
+    let key = unsafe { kAXTrustedCheckOptionPrompt };
+    let Some(yes) = (unsafe { kCFBooleanTrue }) else {
+        return unsafe { AXIsProcessTrusted() != 0 };
+    };
+    let options: CFRetained<CFDictionary<CFString, CFBoolean>> = CFDictionary::from_slices(&[key], &[yes]);
+    let ptr = CFRetained::as_ptr(&options);
+    unsafe { AXIsProcessTrustedWithOptions(ptr.as_ptr() as *const c_void) != 0 }
 }
 
 fn permission() -> PermissionState {
-    if trusted() {
+    if trusted(false) {
         PermissionState::Granted
     } else {
         PermissionState::Denied
@@ -50,10 +60,8 @@ fn permission() -> PermissionState {
 }
 
 fn screen_size() -> (u32, u32) {
-    unsafe {
-        let id: CGDirectDisplayID = CGMainDisplayID();
-        (CGDisplayPixelsWide(id) as u32, CGDisplayPixelsHigh(id) as u32)
-    }
+    let id: CGDirectDisplayID = CGMainDisplayID();
+    (CGDisplayPixelsWide(id) as u32, CGDisplayPixelsHigh(id) as u32)
 }
 
 fn event_mask() -> CGEventMask {
@@ -89,11 +97,14 @@ unsafe extern "C-unwind" fn tap_callback(
     if kind == CGEventType::TapDisabledByTimeout || kind == CGEventType::TapDisabledByUserInput {
         let port = ctx.port.load(Ordering::SeqCst);
         if !port.is_null() {
-            unsafe { CGEventTapEnable(&*port, true) };
+            unsafe { CGEvent::tap_enable(&*port, true) };
         }
         return event.as_ptr();
     }
-    let magic = CGEventGetIntegerValueField(Some(event_ref), CGEventField::EventSourceUserData);
+    if !hid_mac::SHARE_ALL.load(Ordering::SeqCst) {
+        return event.as_ptr();
+    }
+    let magic = CGEvent::integer_value_field(Some(event_ref), CGEventField::EventSourceUserData);
     if magic == MAGIC {
         return event.as_ptr();
     }
@@ -111,8 +122,8 @@ fn dispatch(ctx: &TapCtx, kind: CGEventType, event: &CGEvent) {
         || kind == CGEventType::RightMouseDragged
         || kind == CGEventType::OtherMouseDragged
     {
-        let dx = CGEventGetIntegerValueField(Some(event), CGEventField::MouseEventDeltaX) as i32;
-        let dy = CGEventGetIntegerValueField(Some(event), CGEventField::MouseEventDeltaY) as i32;
+        let dx = CGEvent::integer_value_field(Some(event), CGEventField::MouseEventDeltaX) as i32;
+        let dy = CGEvent::integer_value_field(Some(event), CGEventField::MouseEventDeltaY) as i32;
         if dx == 0 && dy == 0 {
             None
         } else {
@@ -134,18 +145,18 @@ fn dispatch(ctx: &TapCtx, kind: CGEventType, event: &CGEvent) {
             down: kind == CGEventType::OtherMouseDown,
         })
     } else if kind == CGEventType::ScrollWheel {
-        let dy = CGEventGetIntegerValueField(Some(event), CGEventField::ScrollWheelEventDeltaAxis1) as i32;
-        let dx = CGEventGetIntegerValueField(Some(event), CGEventField::ScrollWheelEventDeltaAxis2) as i32;
+        let dy = CGEvent::integer_value_field(Some(event), CGEventField::ScrollWheelEventDeltaAxis1) as i32;
+        let dx = CGEvent::integer_value_field(Some(event), CGEventField::ScrollWheelEventDeltaAxis2) as i32;
         Some(Captured::Wheel { dx, dy })
     } else if kind == CGEventType::KeyDown || kind == CGEventType::KeyUp {
-        let code = CGEventGetIntegerValueField(Some(event), CGEventField::KeyboardEventKeycode) as u16;
+        let code = CGEvent::integer_value_field(Some(event), CGEventField::KeyboardEventKeycode) as u16;
         crate::keymap::hid_from_mac(code).map(|usage| Captured::Key {
             usage,
             down: kind == CGEventType::KeyDown,
         })
     } else if kind == CGEventType::FlagsChanged {
-        let code = CGEventGetIntegerValueField(Some(event), CGEventField::KeyboardEventKeycode) as u16;
-        let flags = unsafe { CGEventGetFlags(Some(event)) };
+        let code = CGEvent::integer_value_field(Some(event), CGEventField::KeyboardEventKeycode) as u16;
+        let flags = CGEvent::flags(Some(event));
         crate::keymap::hid_from_mac(code).map(|usage| Captured::Key {
             usage,
             down: modifier_is_down(flags, code),
@@ -170,23 +181,21 @@ fn modifier_is_down(flags: objc2_core_graphics::CGEventFlags, mac_code: u16) -> 
 }
 
 fn tag(event: &CGEvent) {
-    CGEventSetIntegerValueField(Some(event), CGEventField::EventSourceUserData, MAGIC);
+    CGEvent::set_integer_value_field(Some(event), CGEventField::EventSourceUserData, MAGIC);
 }
 
 fn inject(event: DeviceEvent) {
     match event {
         DeviceEvent::MouseAbsolute { x, y } => {
             let point = CGPoint { x: x as f64, y: y as f64 };
-            if let Some(ev) = unsafe {
-                CGEventCreateMouseEvent(
-                    None::<&CGEventSource>,
-                    CGEventType::MouseMoved,
-                    point,
-                    CGMouseButton::Left,
-                )
-            } {
+            if let Some(ev) = CGEvent::new_mouse_event(
+                None::<&CGEventSource>,
+                CGEventType::MouseMoved,
+                point,
+                CGMouseButton::Left,
+            ) {
                 tag(&ev);
-                unsafe { CGEventPost(CGEventTapLocation::HIDEventTap, Some(&ev)) };
+                CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&ev));
             }
         }
         DeviceEvent::Button { button, down } => {
@@ -199,39 +208,35 @@ fn inject(event: DeviceEvent) {
                 (_, false) => (CGEventType::LeftMouseUp, CGMouseButton::Left),
             };
             let loc = current_location();
-            if let Some(ev) = unsafe {
-                CGEventCreateMouseEvent(None::<&CGEventSource>, kind, loc, which)
-            } {
+            if let Some(ev) = CGEvent::new_mouse_event(None::<&CGEventSource>, kind, loc, which) {
                 tag(&ev);
-                unsafe { CGEventPost(CGEventTapLocation::HIDEventTap, Some(&ev)) };
+                CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&ev));
             }
         }
         DeviceEvent::Wheel { dx, dy } => {
-            if let Some(ev) = unsafe { CGEventCreate(None::<&CGEventSource>) } {
-                unsafe { CGEventSetType(Some(&ev), CGEventType::ScrollWheel) };
-                CGEventSetIntegerValueField(Some(&ev), CGEventField::ScrollWheelEventDeltaAxis1, dy as i64);
-                CGEventSetIntegerValueField(Some(&ev), CGEventField::ScrollWheelEventDeltaAxis2, dx as i64);
+            if let Some(ev) = CGEvent::new(None::<&CGEventSource>) {
+                CGEvent::set_type(Some(&ev), CGEventType::ScrollWheel);
+                CGEvent::set_integer_value_field(Some(&ev), CGEventField::ScrollWheelEventDeltaAxis1, dy as i64);
+                CGEvent::set_integer_value_field(Some(&ev), CGEventField::ScrollWheelEventDeltaAxis2, dx as i64);
                 tag(&ev);
-                unsafe { CGEventPost(CGEventTapLocation::HIDEventTap, Some(&ev)) };
+                CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&ev));
             }
         }
         DeviceEvent::Key { usage, down } => {
             let Some(code) = crate::keymap::mac_from_hid(usage) else {
                 return;
             };
-            if let Some(ev) = unsafe {
-                CGEventCreateKeyboardEvent(None::<&CGEventSource>, code as CGKeyCode, down)
-            } {
+            if let Some(ev) = CGEvent::new_keyboard_event(None::<&CGEventSource>, code as CGKeyCode, down) {
                 tag(&ev);
-                unsafe { CGEventPost(CGEventTapLocation::HIDEventTap, Some(&ev)) };
+                CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&ev));
             }
         }
     }
 }
 
 fn current_location() -> CGPoint {
-    unsafe { CGEventCreate(None::<&CGEventSource>) }
-        .map(|event| CGEventGetLocation(Some(&event)))
+    CGEvent::new(None::<&CGEventSource>)
+        .map(|event| CGEvent::location(Some(&event)))
         .unwrap_or(CGPoint { x: 0.0, y: 0.0 })
 }
 
@@ -244,9 +249,13 @@ fn open_settings() {
 pub fn launch() -> Result<Endpoint, String> {
     let (event_tx, event_rx) = mpsc::channel();
     let (cmd_tx, cmd_rx) = mpsc::channel::<PlatCmd>();
+    let swallow = std::sync::Arc::new(AtomicBool::new(false));
+    let _ = hid_mac::SWALLOW.set(std::sync::Arc::clone(&swallow));
+    hid_mac::remember_sender(event_tx.clone());
+    hid_mac::watch(event_tx.clone());
     let ctx: &'static TapCtx = Box::leak(Box::new(TapCtx {
         events: event_tx,
-        swallow: AtomicBool::new(false),
+        swallow,
         port: AtomicPtr::new(std::ptr::null_mut()),
     }));
     let loop_ptr = Arc::new(AtomicPtr::<c_void>::new(std::ptr::null_mut()));
@@ -254,31 +263,31 @@ pub fn launch() -> Result<Endpoint, String> {
 
     thread::Builder::new()
         .name("multicontrol-tap".into())
-        .spawn(move || unsafe {
-            let port = CGEventTapCreate(
-                CGEventTapLocation::SessionEventTap,
-                CGEventTapPlacement::HeadInsertEventTap,
-                CGEventTapOptions::Default,
-                event_mask(),
-                Some(tap_callback),
-                ctx as *const TapCtx as *mut c_void,
-            );
+        .spawn(move || {
+            let port = unsafe {
+                CGEvent::tap_create(
+                    CGEventTapLocation::SessionEventTap,
+                    CGEventTapPlacement::HeadInsertEventTap,
+                    CGEventTapOptions::Default,
+                    event_mask(),
+                    Some(tap_callback),
+                    ctx as *const TapCtx as *mut c_void,
+                )
+            };
             let Some(port) = port else {
                 log_tap_failure();
                 return;
             };
             ctx.port.store(CFRetained::as_ptr(&port).as_ptr(), Ordering::SeqCst);
-            let source = CFMachPortCreateRunLoopSource(None, Some(&port), 0);
-            let run_loop = CFRunLoopGetCurrent().expect("run loop");
-            CFRunLoopAddSource(&run_loop, source.as_deref(), kCFRunLoopCommonModes);
-            CGEventTapEnable(&port, true);
+            let source = CFMachPort::new_run_loop_source(None, Some(&port), 0);
+            let run_loop = CFRunLoop::current().expect("run loop");
+            unsafe { run_loop.add_source(source.as_deref(), kCFRunLoopCommonModes) };
+            CGEvent::tap_enable(&port, true);
             loop_for_tap.store(
                 CFRetained::as_ptr(&run_loop).as_ptr().cast(),
                 Ordering::SeqCst,
             );
-            std::mem::forget(run_loop);
-            std::mem::forget(port);
-            CFRunLoopRun();
+            CFRunLoop::run();
         })
         .map_err(|err| err.to_string())?;
 
@@ -291,26 +300,30 @@ pub fn launch() -> Result<Endpoint, String> {
                     PlatCmd::Swallow(on) => ctx.swallow.store(on, Ordering::SeqCst),
                     PlatCmd::HideCursor(on) => {
                         if hidden != on {
-                            let id = unsafe { CGMainDisplayID() };
+                            let id = CGMainDisplayID();
                             if on {
-                                unsafe { CGDisplayHideCursor(id) };
+                                CGDisplayHideCursor(id);
                             } else {
-                                unsafe { CGDisplayShowCursor(id) };
+                                CGDisplayShowCursor(id);
                             }
                             hidden = on;
                         }
                     }
-                    PlatCmd::Warp { x, y } => unsafe {
+                    PlatCmd::Warp { x, y } => {
                         CGWarpMouseCursorPosition(CGPoint { x: x as f64, y: y as f64 });
                         CGAssociateMouseAndMouseCursorPosition(true);
                     },
                     PlatCmd::Inject(event) => inject(event),
                     PlatCmd::OpenSettings => open_settings(),
+                    PlatCmd::SetShared { share_all, ids } => {
+                        let run_loop = loop_ptr.load(Ordering::SeqCst);
+                        hid_mac::set_shared(run_loop, share_all, &ids);
+                    }
                     PlatCmd::Identify(_) => {}
                     PlatCmd::Shutdown => {
                         let ptr = loop_ptr.load(Ordering::SeqCst);
                         if !ptr.is_null() {
-                            unsafe { CFRunLoopStop(&*(ptr as *const objc2_core_foundation::CFRunLoop)) };
+                            unsafe { (&*(ptr as *const CFRunLoop)).stop() };
                         }
                         break;
                     }
@@ -322,7 +335,10 @@ pub fn launch() -> Result<Endpoint, String> {
     Ok(Endpoint {
         events: event_rx,
         cmds: cmd_tx,
-        permission: permission(),
+        permission: {
+            let _ = trusted(true);
+            permission()
+        },
         recheck_permission: Some(permission),
         size: screen_size(),
         fake: None,

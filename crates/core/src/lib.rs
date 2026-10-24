@@ -9,6 +9,6 @@ pub use input::{
     generate_pair_code, pair_codes_match, KeyHandoff, KeyState, Message, MoveCoalescer, PeerRecord,
 };
 pub use ipc::{
-    data_dir, ipc_endpoint, DiscoveredPeer, IpcEvent, IpcRequest, PairingView, PermissionState,
-    StateSnapshot, DEFAULT_SESSION_PORT, IPC_TCP_PORT,
+    data_dir, ipc_endpoint, DiscoveredPeer, InputDevice, InputKind, IpcEvent, IpcRequest, PairingView,
+    PermissionState, StateSnapshot, DEFAULT_SESSION_PORT, IPC_TCP_PORT,
 };

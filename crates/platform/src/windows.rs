@@ -62,7 +62,7 @@ pub fn launch() -> Result<Endpoint, String> {
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
                     PlatCmd::Swallow(on) => SWALLOW.store(on, Ordering::SeqCst),
-                    PlatCmd::HideCursor(_) | PlatCmd::Identify(_) | PlatCmd::OpenSettings => {}
+                    PlatCmd::HideCursor(_) | PlatCmd::Identify(_) | PlatCmd::OpenSettings | PlatCmd::SetShared { .. } => {}
                     PlatCmd::Warp { x, y } => unsafe {
                         let _ = SetCursorPos(x, y);
                     },

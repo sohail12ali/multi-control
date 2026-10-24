@@ -282,6 +282,33 @@ impl Desk {
         best.map(|(_, cursor)| cursor)
     }
 
+    /// The point on `from` where a crossing onto `dest` leaves the screen.
+    pub fn edge_point(&self, from: &MachineId, dest: &Cursor) -> Option<Cursor> {
+        let screen = self.get(from)?;
+        if screen.width == 0 || screen.height == 0 {
+            return None;
+        }
+        let x = if dest.x >= screen.right() {
+            screen.right() - 1
+        } else if dest.x < screen.x {
+            screen.x
+        } else {
+            dest.x
+        };
+        let y = if dest.y >= screen.bottom() {
+            screen.bottom() - 1
+        } else if dest.y < screen.y {
+            screen.y
+        } else {
+            dest.y
+        };
+        Some(Cursor {
+            screen: from.clone(),
+            x,
+            y,
+        })
+    }
+
     pub fn jump_to(&self, target: &MachineId) -> Option<Cursor> {
         let screen = self.get(target)?;
         let w = screen.width.max(1) as i32;
@@ -604,6 +631,18 @@ mod tests {
                 cursor: cursor("b", 10, 98),
             }
         );
+    }
+
+    #[test]
+    fn edge_point_stays_on_the_screen_being_left() {
+        let desk = desk(vec![
+            screen("a", 0, 0, 100, 80),
+            screen("b", 100, 0, 40, 40),
+        ]);
+        let parked = desk
+            .edge_point(&MachineId::new("a"), &cursor("b", 100, 30))
+            .expect("edge");
+        assert_eq!(parked, cursor("a", 99, 30));
     }
 
     #[test]

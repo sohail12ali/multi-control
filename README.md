@@ -8,7 +8,7 @@ Every computer runs the same agent. The machine you are sitting at captures the 
 
 Open the panel and choose **Arrange**. Each computer is a rectangle sized from its resolution. Drag them left, right, above, or below each other, including a vertical offset when one screen sits higher. The pointer crosses only where two edges touch. A gap means it stays on the current machine.
 
-You can also jump with **Ctrl+Alt** and an arrow, or by clicking a computer in the panel. **Pause** returns input to the computer you are physically using.
+You can also jump with **Ctrl+Alt** and an arrow, or by clicking a computer in the panel. The pointer waits briefly on a shared edge before it leaves, so a fast flick stays put. **Pause** returns input to the computer you are physically using. **Inputs** chooses which keyboard and mouse may leave this computer; the others stay local.
 
 ## Run it
 
@@ -17,10 +17,11 @@ Install [Rust](https://rustup.rs/) on each computer, then build the panel for th
 **macOS**
 
 ```bash
-cargo run -p multicontrol-macos
+./scripts/bundle-macos.sh
+open "target/Multi Control.app"
 ```
 
-A menu-bar item labeled **MC** opens the panel. The first launch asks for Accessibility permission for `multicontrol-daemon`. Grant it in System Settings, then return to the panel.
+The menu-bar icon opens the panel. The first launch asks for Accessibility permission for **Multi Control**. Allow it in System Settings, then return to the panel. `cargo run -p multicontrol-macos` still builds the same programs for development, but macOS names the permission after the app bundle.
 
 **Windows**
 

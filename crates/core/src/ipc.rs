@@ -38,6 +38,22 @@ pub enum PairingView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputKind {
+    Keyboard,
+    Pointer,
+}
+
+/// A keyboard or pointing device on this computer. `shared` means it may leave for another machine.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputDevice {
+    pub id: String,
+    pub name: String,
+    pub kind: InputKind,
+    pub shared: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateSnapshot {
     pub local_id: String,
     pub local_name: String,
@@ -50,6 +66,7 @@ pub struct StateSnapshot {
     pub discovered: Vec<DiscoveredPeer>,
     pub paired: Vec<PeerRecord>,
     pub pairing: Option<PairingView>,
+    pub inputs: Vec<InputDevice>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +83,8 @@ pub enum IpcRequest {
     Identify { id: String },
     Jump { target: String },
     OpenPermissionSettings,
+    RecheckPermission,
+    SetInputShared { id: String, shared: bool },
     Shutdown,
 }
 

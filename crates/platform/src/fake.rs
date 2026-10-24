@@ -1,4 +1,4 @@
-use crate::{Captured, DeviceEvent, FakeRecord, PlatCmd};
+use crate::{Captured, FakeRecord, PlatCmd};
 use multicontrol_core::PermissionState;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,7 @@ pub fn launch(size: (u32, u32)) -> (Receiver<Captured>, Sender<PlatCmd>, Permiss
                 PlatCmd::Inject(event) => log.push(FakeRecord::Inject(event)),
                 PlatCmd::Identify(label) => log.push(FakeRecord::Identify(label)),
                 PlatCmd::OpenSettings => log.push(FakeRecord::Settings),
+                PlatCmd::SetShared { .. } => {}
                 PlatCmd::Shutdown => break,
             }
         }
@@ -41,8 +42,4 @@ pub fn launch(size: (u32, u32)) -> (Receiver<Captured>, Sender<PlatCmd>, Permiss
         size,
         FakeHandle { input, log },
     )
-}
-
-pub fn matches_absolute(record: &FakeRecord, x: i32, y: i32) -> bool {
-    matches!(record, FakeRecord::Inject(DeviceEvent::MouseAbsolute { x: ax, y: ay }) if *ax == x && *ay == y)
 }
